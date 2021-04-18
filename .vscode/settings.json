@@ -1,0 +1,6 @@
+{
+    "files.watcherExclude": {
+        "**/data/scraped/**": true
+    },
+    "python.pythonPath": "/home/schlerp/projects/uni/masterclass/assessments/assessment3/venv/bin/python3"
+}
