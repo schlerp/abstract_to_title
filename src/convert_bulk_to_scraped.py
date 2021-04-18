@@ -2,6 +2,7 @@ import os
 import json
 from typing import Dict
 from multiprocessing.pool import ThreadPool
+from tqdm import tqdm
 
 
 def process_bulk_json(
@@ -11,7 +12,7 @@ def process_bulk_json(
 ):
     pool = ThreadPool(processes=n_processes)
     with open(bulk_path, "r") as f:
-        for line in f.read().split("\n"):
+        for line in tqdm(f.read().split("\n")):
             pool.apply_async(write_doc_json, args=(line, output_dir))
 
     pool.close()
@@ -21,7 +22,7 @@ def process_bulk_json(
 def write_doc_json(line: str, output_dir: str = "./shared_data/data/scraped"):
     doc = json.loads(line)
     filename = os.path.join(output_dir, "{}.json".format(doc.get("id")))
-    print("writing {}".format(filename))
+    # print("writing {}".format(filename))
     with open(filename, "w+") as f:
         json.dump(doc, f)
 
