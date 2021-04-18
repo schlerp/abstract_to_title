@@ -138,7 +138,10 @@ if __name__ == "__main__":
     print(seq_abstracts.shape)
 
     model, encoder_input, decoder_output = build_model(
-        vocab_size=len(tokeniser.word_counts), seq_len=seq_len
+        vocab_size=len(tokeniser.word_counts),
+        encoder_size=32,
+        decoder_size=32,
+        seq_len=seq_len,
     )
 
     model.compile(
