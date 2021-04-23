@@ -12,6 +12,7 @@ class Crawler(object):
         self,
         output_path: str,
         base_url: str = "https://arxiv.org",
+        robots_url: str = "https://arxiv.org/robots.txt",
         include_url_pattern: str = "https://arxiv.org",
         process_pattern: str = "https://arxiv.org/abs",
         # exclude_url_patterns: List[str] = [],
@@ -26,11 +27,14 @@ class Crawler(object):
         self.already_crawled = set()
         self.output_path = output_path
         self.base_url = base_url
+        self.robots_url = robots_url
         self.process_pattern = process_pattern
         self.include_url_pattern = include_url_pattern
         # self.exclude_url_patterns = exclude_url_patterns
         self.scrape_definitions = scrape_definitions
 
+    def parse_robots(self, )
+        
     def crawl(self, start_url: str):
         self.yet_to_crawl.add(start_url)
         while self.yet_to_crawl:

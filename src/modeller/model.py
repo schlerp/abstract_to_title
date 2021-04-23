@@ -1,15 +1,18 @@
-from typing import Dict, Tuple
+from typing import List, Dict, Tuple, Union, Any
 from tensorflow.keras import layers
 from tensorflow.keras import Model
-from typing import List
+from tensorflow.keras.initializers import Constant
 import numpy as np
 from tqdm import tqdm
 import os
 import re
 import json
 import unicodedata
+import random
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.optimizers import Adadelta
 
 
 def tokenise_text(
@@ -17,14 +20,15 @@ def tokenise_text(
     titles: List[str],
     seq_len: int = 512,
     special_tokens: Dict[str, str] = {"start": "|SS|", "end": "|ES|", "OOV": "|UNK|"},
+    vocab_size: str = None
 ) -> Tuple[List[List], List[List], Tokenizer]:
     tokeniser = Tokenizer(
-        num_words=None,
+        num_words=vocab_size,
         filters='!"#$%&()*+,-./:;<=>?@[\\]^_`{}~\t\n',
         lower=False,
         split=" ",
         char_level=False,
-        # oov_token=special_tokens["OOV"],
+        oov_token=special_tokens["OOV"],
         document_count=0,
     )
 
@@ -74,9 +78,12 @@ def build_model(
     seq_len: int = 500,
     encoder_size: int = 128,
     decoder_size: int = 128,
+    embedding_matrix: Any = None
 ):
-
-    embedding = layers.Embedding(vocab_size, encoder_size, input_length=seq_len)
+    if embedding_matrix is not None:
+        embedding = layers.Embedding(vocab_size, encoder_size, embeddings_initializer=Constant(embedding_matrix), trainable=False, input_length=seq_len)
+    else:
+        embedding = layers.Embedding(vocab_size, encoder_size, input_length=seq_len)
 
     # training model
     encoder_input = layers.Input([seq_len])
@@ -99,6 +106,7 @@ def build_model(
     infer_output, decoder_output_h, decoder_output_c = decoder_hidden(
         decoder_embedding, initial_state=[decoder_input_h, decoder_input_c]
     )
+
     infer_prediction = decoder_dense(infer_output)
 
     model = Model([encoder_input, decoder_input], decoder_prediction)
@@ -139,31 +147,68 @@ def decode_sequence(
         output_tokens, h, c = decoder_model.predict([target_seq, *states_value])
 
         # Sample a token
-        sampled_token_index = np.argmax(output_tokens[0, :])
-        next_word = tokeniser.index_word.get(sampled_token_index, special_tokens["OOV"])
+        sampled_token_index = int(max(output_tokens[0, i, 0], 0))
+        next_word = tokeniser.index_word.get(sampled_token_index, "")
         decoded_sentence.append(next_word)
 
         # Exit condition: either hit max length
         # or find stop character.
-        if next_word == special_tokens["end"] or len(decoded_sentence) >= seq_len:
+        if next_word == special_tokens["end"] or len(decoded_sentence) >= (seq_len-1):
             stop_condition = True
 
-        # Update the target sequence (of length 1).
+        i += 1
+
         target_seq[0, i] = sampled_token_index
 
         # Update states
         states_value = [h, c]
 
-        i += 1
-
     return " ".join(decoded_sentence)
 
 
+def prepare_embeddings(file_path: str = "./shared_data/embeddings/glove.6B.100d.txt"):
+    embeddings_index = {}
+    with open(file_path) as f:
+        for line in f:
+            word, coefs = line.split(maxsplit=1)
+            coefs = np.fromstring(coefs, "f", sep=" ")
+            embeddings_index[word] = coefs
+
+    print("Found %s word vectors." % len(embeddings_index))
+    return embeddings_index
+
+
+def create_embedding_matrix(embeddings_index: Dict, vocab_size: int, embedding_size: int, tokeniser: Tokenizer):
+    hits = 0
+    misses = 0
+    print(len(tokeniser.word_index))
+
+    # Prepare embedding matrix
+    embedding_matrix = np.zeros((vocab_size, embedding_size))
+    for word, i in tokeniser.word_index.items():
+        if i >= vocab_size:
+            break
+        embedding_vector = embeddings_index.get(word)
+        if embedding_vector is not None:
+            # Words not found in embedding index will be all-zeros.
+            # This includes the representation for "padding" and "OOV"
+            embedding_matrix[i] = embedding_vector
+            hits += 1
+        else:
+            misses += 1
+    print("Converted %d words (%d misses)" % (hits, misses))
+    return embedding_matrix
+
+    
 if __name__ == "__main__":
 
     scraped_dir = "./shared_data/data/scraped"
-    n_docs = 100000
+    n_docs = 500_000
     seq_len = 150
+    hidden_size = 100
+    epochs = 100
+    batch_size = 2500
+    vocab_size = 400_000
     special_tokens = {"start": "|SS|", "end": "|ES|", "OOV": "|UNK|"}
 
     abstracts = []
@@ -193,39 +238,87 @@ if __name__ == "__main__":
         titles=titles,
         seq_len=seq_len,
         special_tokens=special_tokens,
+        vocab_size=vocab_size,
     )
 
     seq_titles_tplus1 = roll_sequences(seq_titles)
+#     seq_titles_tplus1 = to_categorical(seq_titles_tplus1, num_classes=vocab_size)
+    
+    
+    embeddings_index = prepare_embeddings()
+    
+    embedding_matrix = create_embedding_matrix(embeddings_index=embeddings_index, vocab_size=vocab_size, embedding_size=hidden_size, tokeniser=tokeniser)
 
     model, encoder_model, decoder_model = build_model(
-        vocab_size=len(tokeniser.word_index) + 1,
-        encoder_size=32,
-        decoder_size=32,
+        vocab_size=vocab_size,
+        encoder_size=hidden_size,
+        decoder_size=hidden_size,
         seq_len=seq_len,
+        embedding_matrix=embedding_matrix
     )
 
-    model.compile(optimizer="rmsprop", loss="mae", metrics=["accuracy"])
+    opt = Adadelta(
+        learning_rate=1.0, rho=0.95, epsilon=1e-06, name='Adadelta',
+    )
+    
+    model.compile(optimizer=opt, loss="mse")
 
     model.summary()
     encoder_model.summary()
     decoder_model.summary()
+    
+#     checkpoint_cb = ModelCheckpoint(
+#         filepath, 
+#         monitor='val_loss', 
+#         verbose=0, 
+#         save_best_only=true,
+#         save_weights_only=False, 
+#         mode='auto', 
+#         save_freq='epoch',
+#     )
 
-    model.fit(
-        x=[seq_abstracts, seq_titles],
-        y=seq_titles_tplus1,
-        epochs=1,
-        batch_size=256,
-    )
+    for i in range(1, 100):
+        start_epoch = max(epochs*(i-1), 1)
+        finish_epoch = start_epoch+epochs
+        model.fit(
+            x=[seq_abstracts, seq_titles],
+            y=seq_titles_tplus1,
+            epochs=finish_epoch,
+            batch_size=batch_size,
+            validation_split=0.1,
+            validation_freq=10,
+            initial_epoch=start_epoch
+        )
 
-    # abstract from: https://arxiv.org/abs/2104.07257
-    # title is: A Novel Neuron Model of Visual Processor
-    test_input = "Simulating and imitating the neuronal network of humans or mammals is a popular topic that has been explored for many years in the fields of pattern recognition and computer vision. Inspired by neuronal conduction characteristics in the primary visual cortex of cats, pulse-coupled neural networks (PCNNs) can exhibit synchronous oscillation behavior, which can process digital images without training. However, according to the study of single cells in the cat primary visual cortex, when a neuron is stimulated by an external periodic signal, the interspike-interval (ISI) distributions represent a multimodal distribution. This phenomenon cannot be explained by all PCNN models. By analyzing the working mechanism of the PCNN, we present a novel neuron model of the primary visual cortex consisting of a continuous-coupled neural network (CCNN). Our model inherited the threshold exponential decay and synchronous pulse oscillation property of the original PCNN model, and it can exhibit chaotic behavior consistent with the testing results of cat primary visual cortex neurons. Therefore, our CCNN model is closer to real visual neural networks. For image segmentation tasks, the algorithm based on CCNN model has better performance than the state-of-art of visual cortex neural network model. The strength of our approach is that it helps neurophysiologists further understand how the primary visual cortex works and can be used to quantitatively predict the temporal-spatial behavior of real neural networks. CCNN may also inspire engineers to create brain-inspired deep learning networks for artificial intelligence purposes. "
-    test_output = decode_sequence(
-        test_input,
-        tokeniser=tokeniser,
-        encoder_model=encoder_model,
-        decoder_model=decoder_model,
-        seq_len=seq_len,
-        special_tokens=special_tokens,
-    )
-    print(test_output)
+        test_input = docs[random.randint(0, n_docs)]['abstract']
+        test_output = decode_sequence(
+            test_input,
+            tokeniser=tokeniser,
+            encoder_model=encoder_model,
+            decoder_model=decoder_model,
+            seq_len=seq_len,
+            special_tokens=special_tokens,
+        )
+        print(test_input)
+        print(test_output)
+
+        model.save(
+            os.path.join(
+                "shared_data/models/",
+                f"{n_docs}_{seq_len}_{hidden_size}_{epochs*i}_{batch_size}.model",
+            )
+        )
+
+        encoder_model.save(
+            os.path.join(
+                "shared_data/models/",
+                f"{n_docs}_{seq_len}_{hidden_size}_{epochs*i}_{batch_size}.encoder",
+            )
+        )
+
+        decoder_model.save(
+            os.path.join(
+                "shared_data/models/",
+                f"{n_docs}_{seq_len}_{hidden_size}_{epochs*i}_{batch_size}.decoder",
+            )
+        )
