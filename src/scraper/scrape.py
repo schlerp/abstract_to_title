@@ -33,8 +33,9 @@ class Crawler(object):
         # self.exclude_url_patterns = exclude_url_patterns
         self.scrape_definitions = scrape_definitions
 
-    def parse_robots(self, )
-        
+    def parse_robots(self):
+        pass
+
     def crawl(self, start_url: str):
         self.yet_to_crawl.add(start_url)
         while self.yet_to_crawl:

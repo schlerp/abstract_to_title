@@ -20,7 +20,7 @@ def tokenise_text(
     titles: List[str],
     seq_len: int = 512,
     special_tokens: Dict[str, str] = {"start": "|SS|", "end": "|ES|", "OOV": "|UNK|"},
-    vocab_size: str = None
+    vocab_size: str = None,
 ) -> Tuple[List[List], List[List], Tokenizer]:
     tokeniser = Tokenizer(
         num_words=vocab_size,
@@ -38,7 +38,7 @@ def tokenise_text(
     seq_abstracts = pad_sequences(seq_abstracts, padding="post", maxlen=seq_len)
 
     seq_titles = tokeniser.texts_to_sequences(titles)
-    seq_titles = pad_sequences(seq_titles, padding="post", maxlen=seq_len)
+    seq_titles = pad_sequences(seq_titles, padding="pre", maxlen=seq_len)
 
     return seq_abstracts, seq_titles, tokeniser
 
@@ -78,10 +78,16 @@ def build_model(
     seq_len: int = 500,
     encoder_size: int = 128,
     decoder_size: int = 128,
-    embedding_matrix: Any = None
+    embedding_matrix: Any = None,
 ):
     if embedding_matrix is not None:
-        embedding = layers.Embedding(vocab_size, encoder_size, embeddings_initializer=Constant(embedding_matrix), trainable=False, input_length=seq_len)
+        embedding = layers.Embedding(
+            vocab_size,
+            encoder_size,
+            embeddings_initializer=Constant(embedding_matrix),
+            trainable=False,
+            input_length=seq_len,
+        )
     else:
         embedding = layers.Embedding(vocab_size, encoder_size, input_length=seq_len)
 
@@ -153,7 +159,7 @@ def decode_sequence(
 
         # Exit condition: either hit max length
         # or find stop character.
-        if next_word == special_tokens["end"] or len(decoded_sentence) >= (seq_len-1):
+        if next_word == special_tokens["end"] or len(decoded_sentence) >= (seq_len - 1):
             stop_condition = True
 
         i += 1
@@ -178,7 +184,9 @@ def prepare_embeddings(file_path: str = "./shared_data/embeddings/glove.6B.100d.
     return embeddings_index
 
 
-def create_embedding_matrix(embeddings_index: Dict, vocab_size: int, embedding_size: int, tokeniser: Tokenizer):
+def create_embedding_matrix(
+    embeddings_index: Dict, vocab_size: int, embedding_size: int, tokeniser: Tokenizer
+):
     hits = 0
     misses = 0
     print(len(tokeniser.word_index))
@@ -199,15 +207,15 @@ def create_embedding_matrix(embeddings_index: Dict, vocab_size: int, embedding_s
     print("Converted %d words (%d misses)" % (hits, misses))
     return embedding_matrix
 
-    
+
 if __name__ == "__main__":
 
     scraped_dir = "./shared_data/data/scraped"
-    n_docs = 500_000
+    n_docs = 1_000_000
     seq_len = 150
     hidden_size = 100
     epochs = 100
-    batch_size = 2500
+    batch_size = 1000
     vocab_size = 400_000
     special_tokens = {"start": "|SS|", "end": "|ES|", "OOV": "|UNK|"}
 
@@ -241,45 +249,55 @@ if __name__ == "__main__":
         vocab_size=vocab_size,
     )
 
+    with open(f"./shared_data/models/tokeniser_{n_docs}.json", "w+") as f:
+        f.write(tokeniser.to_json())
+
     seq_titles_tplus1 = roll_sequences(seq_titles)
-#     seq_titles_tplus1 = to_categorical(seq_titles_tplus1, num_classes=vocab_size)
-    
-    
+    #     seq_titles_tplus1 = to_categorical(seq_titles_tplus1, num_classes=vocab_size)
+
     embeddings_index = prepare_embeddings()
-    
-    embedding_matrix = create_embedding_matrix(embeddings_index=embeddings_index, vocab_size=vocab_size, embedding_size=hidden_size, tokeniser=tokeniser)
+
+    embedding_matrix = create_embedding_matrix(
+        embeddings_index=embeddings_index,
+        vocab_size=vocab_size,
+        embedding_size=hidden_size,
+        tokeniser=tokeniser,
+    )
 
     model, encoder_model, decoder_model = build_model(
         vocab_size=vocab_size,
         encoder_size=hidden_size,
         decoder_size=hidden_size,
         seq_len=seq_len,
-        embedding_matrix=embedding_matrix
+        embedding_matrix=embedding_matrix,
     )
 
     opt = Adadelta(
-        learning_rate=1.0, rho=0.95, epsilon=1e-06, name='Adadelta',
+        learning_rate=0.3,
+        rho=0.95,
+        epsilon=1e-06,
+        name="Adadelta",
     )
-    
+
     model.compile(optimizer=opt, loss="mse")
 
     model.summary()
     encoder_model.summary()
     decoder_model.summary()
-    
-#     checkpoint_cb = ModelCheckpoint(
-#         filepath, 
-#         monitor='val_loss', 
-#         verbose=0, 
-#         save_best_only=true,
-#         save_weights_only=False, 
-#         mode='auto', 
-#         save_freq='epoch',
-#     )
+
+    #     checkpoint_cb = ModelCheckpoint(
+    #         filepath,
+    #         monitor='val_loss',
+    #         verbose=0,
+    #         save_best_only=true,
+    #         save_weights_only=False,
+    #         mode='auto',
+    #         save_freq='epoch',
+    #     )
 
     for i in range(1, 100):
-        start_epoch = max(epochs*(i-1), 1)
-        finish_epoch = start_epoch+epochs
+        start_epoch = max(epochs * (i - 1), 1)
+        finish_epoch = start_epoch + epochs
         model.fit(
             x=[seq_abstracts, seq_titles],
             y=seq_titles_tplus1,
@@ -287,10 +305,10 @@ if __name__ == "__main__":
             batch_size=batch_size,
             validation_split=0.1,
             validation_freq=10,
-            initial_epoch=start_epoch
+            initial_epoch=start_epoch,
         )
 
-        test_input = docs[random.randint(0, n_docs)]['abstract']
+        test_input = docs[random.randint(0, n_docs)]["abstract"]
         test_output = decode_sequence(
             test_input,
             tokeniser=tokeniser,
